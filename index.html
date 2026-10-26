@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>マランゴーニ効果 表面張力流 Canvas</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-900 min-h-screen p-4">
+<div class="max-w-4xl mx-auto">
+  <h1 class="text-2xl font-bold text-white text-center mb-1">マランゴーニ効果 表面張力流 Canvas</h1>
+  <p class="text-gray-400 text-center text-sm mb-4">温度勾配による表面張力差がつくるマランゴーニ流 + 石鹸膜干渉色</p>
+
+  <div class="flex flex-col lg:flex-row gap-4">
+    <!-- Controls -->
+    <div class="lg:w-64 space-y-3">
+      <div class="bg-gray-800 rounded-xl p-3 space-y-3">
+        <div>
+          <label class="text-gray-300 text-sm flex justify-between">
+            <span>温度差 ΔT</span>
+            <span id="dt-val" class="text-orange-400 font-bold">30 K</span>
+          </label>
+          <input type="range" id="dt-slider" min="0" max="80" step="1" value="30" class="w-full accent-orange-500" aria-label="温度差スライダー">
+        </div>
+        <div>
+          <label class="text-gray-300 text-sm flex justify-between">
+            <span>速度係数</span>
+            <span id="speed-val" class="text-green-400 font-bold">1.0×</span>
+          </label>
+          <input type="range" id="speed-slider" min="0.1" max="3" step="0.1" value="1" class="w-full accent-green-500" aria-label="速度係数スライダー">
+        </div>
+        <div>
+          <label class="text-gray-300 text-sm flex justify-between">
+            <span>パーティクル数</span>
+            <span id="npart-val" class="text-purple-400 font-bold">200</span>
+          </label>
+          <input type="range" id="npart-slider" min="50" max="500" step="10" value="200" class="w-full accent-purple-500" aria-label="パーティクル数スライダー">
+        </div>
+      </div>
+
+      <!-- Physical info -->
+      <div class="bg-gray-800 rounded-xl p-3 text-xs text-gray-400 space-y-1">
+        <p class="font-semibold text-gray-300">物理式</p>
+        <p>Δγ = -dγ/dT × ΔT</p>
+        <p>dγ/dT ≈ -0.15 mN/(m·K) (水)</p>
+        <p id="delta-gamma" class="text-yellow-300 font-semibold">Δγ = 0 mN/m</p>
+        <p class="mt-1">マランゴーニ流: 高γ(冷)→低γ(熱)方向</p>
+        <p>（表面張力は高温部で低下）</p>
+      </div>
+
+      <!-- Film thickness -->
+      <div class="bg-gray-800 rounded-xl p-3">
+        <p class="text-gray-400 text-xs uppercase mb-2">薄膜厚さ（干渉色）</p>
+        <div class="space-y-1">
+          <div class="flex items-center gap-2">
+            <div class="w-4 h-4 rounded" style="background:#111"></div>
+            <span class="text-gray-400 text-xs">極薄 &lt;50nm</span>
+          </div>
+          <div class="flex items-center gap-2">
+            <div class="w-4 h-4 rounded" style="background:#8800ff"></div>
+            <span class="text-gray-400 text-xs">100nm → 紫</span>
+          </div>
+          <div class="flex items-center gap-2">
+            <div class="w-4 h-4 rounded" style="background:#ff4400"></div>
+            <span class="text-gray-400 text-xs">200nm → 赤</span>
+          </div>
+          <div class="flex items-center gap-2">
+            <div class="w-4 h-4 rounded" style="background:#00ff44"></div>
+            <span class="text-gray-400 text-xs">300nm → 緑</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="flex gap-2">
+        <button id="pause-btn" class="flex-1 bg-yellow-600 hover:bg-yellow-700 text-white py-2 rounded-lg font-semibold" aria-label="一時停止/再生">⏸ 停止</button>
+        <button id="reset-btn" class="flex-1 bg-gray-600 hover:bg-gray-500 text-white py-2 rounded-lg font-semibold" aria-label="リセット">↺ リセット</button>
+      </div>
+    </div>
+
+    <!-- Canvas -->
+    <div class="flex-1">
+      <canvas id="soap-canvas" class="w-full rounded-xl border border-gray-700" aria-label="マランゴーニ効果可視化"></canvas>
+      <div class="flex justify-between text-xs text-gray-400 mt-1 px-2">
+        <span>🔥 高温（低γ）</span>
+        <span>❄️ 低温（高γ）</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const canvas = document.getElementById('soap-canvas');
+const ctx = canvas.getContext('2d');
+
+let particles = [];
+let paused = false;
+let animId = null;
+let N = 200;
+let deltaT = 30;
+let speedMult = 1.0;
+
+function thinFilmColor(x, W) {
+  // Thickness varies: thinner on right (hot pulls), thicker on left
+  const thickness = 50 + (1 - x/W) * 400; // nm, 50 on hot side, 450 on cool
+  return thicknessToColor(thickness);
+}
+
+function thicknessToColor(nm) {
+  if (nm < 50) return [5,5,5];
+  if (nm < 100) {
+    const t = (nm-50)/50;
+    return [Math.round(t*136), 0, Math.round(t*255)];
+  }
+  if (nm < 180) {
+    const t = (nm-100)/80;
+    return [Math.round(136+t*119), 0, Math.round(255-t*255)];
+  }
+  if (nm < 250) {
+    const t = (nm-180)/70;
+    return [255, Math.round(t*140), 0];
+  }
+  if (nm < 330) {
+    const t = (nm-250)/80;
+    return [Math.round(255-t*255), Math.round(140+t*115), 0];
+  }
+  if (nm < 420) {
+    const t = (nm-330)/90;
+    return [0, 255, Math.round(t*180)];
+  }
+  const t = Math.min(1,(nm-420)/80);
+  return [0, Math.round(255-t*200), Math.round(180+t*75)];
+}
+
+function resize() {
+  const W = canvas.offsetWidth || 600;
+  const H = Math.round(W * 0.55);
+  canvas.width = W * (window.devicePixelRatio||1);
+  canvas.height = H * (window.devicePixelRatio||1);
+  ctx.scale(window.devicePixelRatio||1, window.devicePixelRatio||1);
+  return [W, H];
+}
+
+function initParticles() {
+  const W = canvas.offsetWidth || 600;
+  const H = Math.round(W * 0.55);
+  particles = [];
+  for (let i = 0; i < N; i++) {
+    particles.push({
+      x: Math.random() * W,
+      y: Math.random() * H,
+      vx: (Math.random()-0.5)*0.5,
+      vy: (Math.random()-0.5)*0.5,
+    });
+  }
+}
+
+function getVelocityAtX(x, W) {
+  // Marangoni: dγ/dx > 0 → flow from low to high gamma
+  // gamma decreases with temperature, temperature increases left→right
+  // So gamma decreases left→right, so flow is right→left (from low γ hot side back to high γ cold side)
+  // but the surface drags fluid: net flow from high-T(low-γ) back toward low-T(high-γ) -- actually
+  // Marangoni flow goes from LOW surface tension (hot) to HIGH surface tension (cold): right→left
+  const dγdT = -0.15e-3; // N/(m·K)
+  const Δγ = Math.abs(dγdT) * deltaT; // Pa·m difference
+  const vMax = Δγ * 0.5; // scale to px/frame
+  const scaleFactor = 30 * speedMult;
+  // Flow from high temp (left, low γ) to ... wait:
+  // Marangoni: flow from low γ to high γ, i.e. from hot(left) to cold(right)? No:
+  // Flow goes from LOW surface tension → HIGH surface tension regions (pulled toward higher γ)
+  // Hot=left=low γ, Cold=right=high γ → Flow LEFT→RIGHT (particles move toward right/cold)
+  // But that creates circulation: at surface left→right, returning below
+  // For simplicity: at y < H/2 (top surface layer) flow is left→right, bottom layer right→left
+  return Δγ * scaleFactor;
+}
+
+function updateParticles(W, H) {
+  const strength = getVelocityAtX(0, W);
+  particles.forEach(p => {
+    // Surface layer (y < H*0.4): Marangoni flow left→right
+    // Return flow (y > H*0.6): right→left
+    // Middle: gradual transition
+    const normalY = p.y / H;
+    let fx = 0;
+    if (normalY < 0.45) {
+      fx = strength * (0.45 - normalY) / 0.45;
+    } else if (normalY > 0.55) {
+      fx = -strength * (normalY - 0.55) / 0.45;
+    }
+    // Thermal gradient also creates gentle vertical circulation
+    const normalX = p.x / W;
+    const fy = (normalX < 0.5 ? normalX : 1-normalX) * strength * 0.3;
+
+    p.vx = p.vx * 0.9 + fx * 0.1 * speedMult;
+    p.vy = p.vy * 0.9 + (fy * (normalY < 0.5 ? -1 : 1)) * 0.05 * speedMult;
+    p.x += p.vx;
+    p.y += p.vy;
+    if (p.x < 0) p.x += W;
+    if (p.x > W) p.x -= W;
+    if (p.y < 0) p.y += H;
+    if (p.y > H) p.y -= H;
+  });
+}
+
+function drawBackground(W, H) {
+  // Thin film interference gradient
+  const imageData = ctx.createImageData(W, H);
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      // Temperature gradient: warmer on left
+      const [r, g, b] = thinFilmColor(x, W);
+      // Slight vertical variation
+      const yVar = Math.sin(y / H * Math.PI) * 0.3 + 0.7;
+      const idx = (y * W + x) * 4;
+      imageData.data[idx] = Math.round(r * yVar);
+      imageData.data[idx+1] = Math.round(g * yVar);
+      imageData.data[idx+2] = Math.round(b * yVar);
+      imageData.data[idx+3] = 255;
+    }
+  }
+  ctx.putImageData(imageData, 0, 0);
+}
+
+function drawParticles(W, H) {
+  particles.forEach(p => {
+    const speed = Math.sqrt(p.vx*p.vx + p.vy*p.vy);
+    const alpha = Math.min(1, 0.4 + speed * 2);
+    const r = Math.min(1, speed * 3) * 255;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 2, 0, 2*Math.PI);
+    ctx.fillStyle = `rgba(${Math.round(r)},200,255,${alpha.toFixed(2)})`;
+    ctx.fill();
+
+    // Velocity arrow
+    if (speed > 0.3) {
+      const len = Math.min(12, speed * 8);
+      const ex = p.x + p.vx/speed * len;
+      const ey = p.y + p.vy/speed * len;
+      ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(ex, ey);
+      ctx.strokeStyle = `rgba(255,255,255,${(alpha*0.5).toFixed(2)})`;
+      ctx.lineWidth = 0.8;
+      ctx.stroke();
+    }
+  });
+}
+
+function drawLabels(W, H) {
+  ctx.font = 'bold 12px sans-serif';
+  ctx.fillStyle = 'rgba(255,120,50,0.9)';
+  ctx.fillText('高温 (低γ)', 8, 18);
+  ctx.fillStyle = 'rgba(100,180,255,0.9)';
+  ctx.fillText('低温 (高γ)', W-75, 18);
+  // Flow arrows
+  ctx.strokeStyle = 'rgba(255,255,255,0.3)';
+  ctx.lineWidth = 1.5;
+  ctx.setLineDash([4,3]);
+  ctx.beginPath(); ctx.moveTo(20, H*0.25); ctx.lineTo(W-20, H*0.25); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(W-20, H*0.75); ctx.lineTo(20, H*0.75); ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.fillStyle = 'rgba(255,255,255,0.4)';
+  ctx.font = '10px sans-serif';
+  ctx.fillText('表面流（→）', W/2-30, H*0.22);
+  ctx.fillText('戻り流（←）', W/2-30, H*0.72);
+}
+
+let [W, H] = [600, 330];
+
+function frame() {
+  if (!paused) {
+    updateParticles(W, H);
+    ctx.clearRect(0, 0, W, H);
+    drawBackground(W, H);
+    drawParticles(W, H);
+    drawLabels(W, H);
+  }
+  animId = requestAnimationFrame(frame);
+}
+
+function updateInfo() {
+  deltaT = parseFloat(document.getElementById('dt-slider').value);
+  speedMult = parseFloat(document.getElementById('speed-slider').value);
+  const newN = parseInt(document.getElementById('npart-slider').value);
+  document.getElementById('dt-val').textContent = deltaT + ' K';
+  document.getElementById('speed-val').textContent = speedMult.toFixed(1) + '×';
+  document.getElementById('npart-val').textContent = newN;
+  const dγ = 0.15e-3 * deltaT * 1000; // mN/m
+  document.getElementById('delta-gamma').textContent = `Δγ = ${dγ.toFixed(1)} mN/m`;
+  if (newN !== N) { N = newN; initParticles(); }
+}
+
+document.getElementById('dt-slider').addEventListener('input', updateInfo);
+document.getElementById('speed-slider').addEventListener('input', updateInfo);
+document.getElementById('npart-slider').addEventListener('input', updateInfo);
+document.getElementById('pause-btn').addEventListener('click', () => {
+  paused = !paused;
+  document.getElementById('pause-btn').textContent = paused ? '▶ 再生' : '⏸ 停止';
+});
+document.getElementById('reset-btn').addEventListener('click', () => { initParticles(); });
+
+window.addEventListener('resize', () => {
+  [W, H] = resize();
+  initParticles();
+});
+
+[W, H] = resize();
+initParticles();
+frame();
+</script>
+</body>
+</html>
